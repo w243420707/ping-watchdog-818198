@@ -10,10 +10,33 @@ PING_TIMEOUT=3
 CONFIG_DIR="${PING_WATCHDOG_CONFIG_DIR:-$HOME/.config/ping-watchdog}"
 CONFIG_FILE="$CONFIG_DIR/api_url"
 LOG_FILE="${PING_WATCHDOG_LOG_FILE:-$HOME/.ping-watchdog.log}"
+MAX_LOG_RECORDS=10
 CRON_TAG="# ping-watchdog-818198"
 
-log() {
-  printf '%s %s\n' "$(date '+%Y-%m-%d %H:%M:%S')" "$*" >> "$LOG_FILE"
+record_curl_attempt() {
+  message=$1
+  log_dir=$(dirname "$LOG_FILE")
+  tmp_log=$(mktemp)
+  keep_records=$((MAX_LOG_RECORDS - 1))
+
+  mkdir -p "$log_dir"
+  {
+    if [ "$keep_records" -gt 0 ] && [ -f "$LOG_FILE" ]; then
+      grep -F "FAIL all targets" "$LOG_FILE" | tail -n "$keep_records"
+    fi
+    printf '%s %s\n' "$(date '+%Y-%m-%d %H:%M:%S')" "$message"
+  } > "$tmp_log"
+  mv "$tmp_log" "$LOG_FILE"
+}
+
+prune_log() {
+  if [ ! -f "$LOG_FILE" ]; then
+    return 0
+  fi
+
+  tmp_log=$(mktemp)
+  grep -F "FAIL all targets" "$LOG_FILE" | tail -n "$MAX_LOG_RECORDS" > "$tmp_log" || :
+  mv "$tmp_log" "$LOG_FILE"
 }
 
 script_path() {
@@ -69,6 +92,8 @@ install_cron() {
   require_command curl
   require_command crontab
   require_command mktemp
+  require_command tail
+  require_command grep
 
   current_cron=$(mktemp)
   next_cron=$(mktemp)
@@ -78,30 +103,32 @@ install_cron() {
   grep -F -v "$CRON_TAG" "$current_cron" | grep -F -v "$old_cron_tag" > "$next_cron" || :
   printf '%s\n' "$cron_cmd" >> "$next_cron"
   crontab "$next_cron"
+  prune_log
 
   printf '已部署：每 2 分钟 ping 检查 3 个地址，全部不通时 curl 配置的 API。\n'
   printf 'API 配置文件：%s\n' "$CONFIG_FILE"
-  printf '日志文件：%s\n' "$LOG_FILE"
+  printf '日志文件：%s（只保留最近 %s 次触发 curl 的记录）\n' "$LOG_FILE" "$MAX_LOG_RECORDS"
 }
 
 check_once() {
   load_api_url
+  require_command ping
+  require_command curl
+  require_command mktemp
+  require_command tail
+  require_command grep
 
   for target in $TARGETS; do
     if ping -c "$PING_COUNT" -W "$PING_TIMEOUT" "$target" >/dev/null 2>&1; then
-      log "OK ping $target"
       exit 0
     fi
-
-    log "FAIL ping $target"
   done
 
-  log "FAIL all targets, calling API"
-  if curl -fsS --max-time 30 "$API_URL" >> "$LOG_FILE" 2>&1; then
-    log "API call succeeded"
+  if curl -fsS --max-time 30 "$API_URL" >/dev/null 2>&1; then
+    record_curl_attempt "FAIL all targets, API call succeeded"
   else
     status=$?
-    log "API call failed, curl exit code: $status"
+    record_curl_attempt "FAIL all targets, API call failed, curl exit code: $status"
     exit "$status"
   fi
 }
