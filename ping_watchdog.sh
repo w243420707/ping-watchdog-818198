@@ -177,6 +177,13 @@ cleanup_lock() {
   fi
 }
 
+clear_runtime_state() {
+  mkdir -p "$STATE_DIR" 2>/dev/null || :
+  rm -f "$FAIL_COUNT_FILE" "$LAST_API_FILE" "$LAST_IP_FILE" "$TCP_CACHE_FILE" "$TCP_CACHE_TIME_FILE" 2>/dev/null || :
+  rm -f "$LOCK_TIME_FILE" 2>/dev/null || :
+  rmdir "$LOCK_DIR" 2>/dev/null || :
+}
+
 acquire_lock() {
   mkdir -p "$STATE_DIR" 2>/dev/null || :
 
@@ -735,6 +742,7 @@ install_cron() {
   printf '%s\n' "$cron_cmd" >> "$next_cron"
   crontab "$next_cron"
 
+  clear_runtime_state
   refresh_probe_cache >/dev/null 2>&1 || :
 
   printf '已部署：每 2 分钟检查一次，连续 %s 次疑似被墙时 curl 配置的 API。\n' "$FAIL_THRESHOLD"
